@@ -1,0 +1,8 @@
+&inputs
+	nx=32
+	k=1.0
+	a=0.1
+	total_time=0.05
+	Tinit='spike'
+	/
+

@@ -1,0 +1,8 @@
+&in
+	nx=2049
+	ny=2049
+	init='spike'
+	alpha=0.7
+	multigrid=.true.
+/
+

@@ -1,0 +1,8 @@
+
+&inputs
+	nx=100,  ny=100
+	B=1.
+	k=1.0
+	a_adv=0.4,  a_dif=0.2
+	total_time=5.0
+ /

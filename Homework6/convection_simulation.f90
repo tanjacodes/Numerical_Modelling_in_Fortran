@@ -31,7 +31,7 @@ contains
         do i= 2, nx-1
             do j = 1, ny
                 !vy = -dS/dx using centered finite difference approx
-                vy(i,j) = (S(i-1,j) - S(i+1,j))*(nx-1)/2
+                vy(i,j) = (S(i-1,j) - S(i+1,j))*(ny-1)/2
             end do
         end do
 
@@ -401,6 +401,12 @@ program convection_simulation
         !endif
     end do
     
+    write(filename, '("T_output.dat")')
+    open(unit=10, file=filename, status="replace")
+    do i = 1, ny
+        write(10, *) (grids%T(j, i), j=1, nx)
+    end do
+    close(10)
     print*, "End of do loop"
     
 

@@ -12,10 +12,12 @@ contains
         real, dimension(nx,ny):: partialdx
 
         do i = 2,nx-1
-            partial(i,:) = (T(i+1,:) - T(i-1,:))/dx
+            partial(i,:) = (T(i+1,:) - T(i-1,:))/dx/2.0
         end do      
         partial(1,:) = 0.0
         partial(nx,:) = 0.0
+        !partial(:,1) = 0.0
+        !partial(:,ny) =0.0
         partialdx = partial
         
     end function partialdx
@@ -31,7 +33,7 @@ contains
         do i= 2, nx-1
             do j = 1, ny
                 !vy = -dS/dx using centered finite difference approx
-                vy(i,j) = (S(i-1,j) - S(i+1,j))*(nx-1)/2
+                vy(i,j) = (S(i-1,j) - S(i+1,j))*(ny-1)/2
             end do
         end do
 
@@ -95,8 +97,8 @@ contains
     
         do i = 2,Nx-1
             do j = 2, Ny-1
-                second_derivative(i,j) = (array(i-1,j) + array(i+1,j) - 2*array(i,j))/(dx*dx)
-                second_derivative(i,j) = second_derivative(i,j) + (array(i,j-1) + array(i, j+1)-2*array(i,j))/(dy*dy) 
+                second_derivative(i,j) = (array(i-1,j) + array(i+1,j) - 2*array(i,j))/(dx*dx) &
+                 + (array(i,j-1) + array(i, j+1)-2*array(i,j))/(dy*dy) 
             end do    
         end do
     end function second_derivative
@@ -207,7 +209,7 @@ module Poisson_solver
                 !fine(i*2,2*ny-1) = (fine(i*2-1,2*ny-1)+fine(i*2+1,2*ny-1))/2
             end do
         end do
-           !even column and row index
+        !even column and row index
         do i=2,2*nxc-1,2
             do j=2,2*nyc-1,2
                 fine(i,j)=(fine(i-1,j)+fine(i+1,j)+fine(i,j+1)+fine(i,j-1))/4
@@ -280,7 +282,7 @@ module grid_mod
     type grid
         integer::nx,ny
         real::h
-        real, allocatable :: S(:,:), W(:,:), T(:,:), vx(:,:), vy(:,:), rhs(:,:)
+        real, allocatable :: S(:,:), W(:,:), T(:,:), vx(:,:), vy(:,:)
     end type grid
 
 end module grid_mod
@@ -294,14 +296,14 @@ program convection_simulation
     implicit none
     !real, allocatable :: T(:,:), S(:,:), W(:,:), vx(:,:), vy(:,:), rhs(:,:)
     type(grid):: grids
-    real ::  h, Ra, err ,a_adv, a_dif, total_time, width, dt_dif, dt_adv, dt, dx, dy 
-    real:: time, res_rms, rhs_rms, W_rms,k = 1.0, next_save=0.0, save_interval
-    integer :: nx, ny, i,j, iteration_counter = 0
-    character(len=10) :: Tinit 
-    character(len=50) :: filename = 'input1.txt'   
+    real :: Pr = 0.1, Ra = 1e6, err = 1.e-3 ,a_adv = 0.4, a_dif = 0.15, total_time = 0.1, dt_dif, dt_adv, dt 
+    real :: time = 0.0, res_rms,vmax = 0.0,vxmax = 0.0, vymax = 0.0, W_rms = 0.0, EPS = 1.e-4
+    integer :: nx = 257, ny = 65, i,j
+    character(len=10) :: Tinit = 'cosine'
+    character(len=70) :: filename = 'lowPrandt_parameters.txt'   
     real :: PI = 3.14159265359
     !read input parameter
-    namelist /inputs/ nx, ny, Ra, total_time, err, a_adv, a_dif, Tinit 
+    namelist /inputs/ Pr,nx, ny, Ra, total_time, err, a_adv, a_dif, Tinit 
 
     if(command_argument_count()>0) &
         call get_command_argument(1,filename)
@@ -313,96 +315,114 @@ program convection_simulation
     close(1)     
 
     !initialise some variables
+    !initialise grid
     grids%nx = nx
     grids%ny = ny
-    dy = 1.0/(grids%ny-1)
-    dx = dy
-    width = dy*(grids%nx-1)
-    !initialise grid
     call Initialise_grid(grids)
-    dt_dif = a_dif*(grids%h**2)/k
-    time = 0.0
-    save_interval=total_time/200 
-      
+    !grids%h = 1.0/(grids%ny-1)
+    dt_dif = a_dif*(grids%h**2)/MAX(Pr,1.0)
+    print*, "Initialised grid"
+    
+    !open file to write time vs vxmax 
+    open(unit=10, file='time_vmax.dat', status="replace")
+    write(10,*) time, vmax
     !mainloop - timesteps
+    print*, "Start do loop"
     do while (time <=  total_time) 
         
+        
+        !boundary conditions for W    
+        grids%W(:,1)=1.
+        grids%W(:,ny)=0.
+        grids%W(1,:)=grids%T(2,:)
+        grids%W(nx,:)=grids%T(nx-1,:)        
+        !calculate rms of W
+        W_rms = 0.0
+        do concurrent (i = 1:grids%nx, j = 1:grids%ny)
+            W_rms = W_rms + grids%W(i,j)**2
+        end do
+        W_rms = sqrt(W_rms/grids%nx/grids%ny)
+        !if W_rms = 0, then W ==0, then it is not necessary to calculate S using Vcycle_2DPoisson
+        !we then know that S = 0
+        if(W_rms < EPS) then
+            grids%S = 0
+        else
+            !poisson solve to get S from W
+            res_rms = Vcycle_2DPoisson(grids%S,grids%W,grids%h)
+            do while(res_rms >  err*W_rms)
+                res_rms = Vcycle_2DPoisson(grids%S,grids%W,grids%h)
+
+            !boundary conditions for S
+            grids%S(1,:) = 0.0
+            grids%S(nx,:) = 0.0
+            grids%S(:,1) = 0.0
+            grids%S(:,ny) = 0.0
+            end do
+        end if
+         
+
+        !calculating vecolicites from S
+        grids%vx =  vel(grids%S,grids%vy,grids%nx,grids%ny)
+        vxmax = MAXVAL(ABS(grids%vx)) 
+        vymax = MAXVAL(ABS(grids%vy))
+        vmax = MAX(vxmax,vymax)
+        !calculate timestep from diffusion and from advection timestep
+        !if both velocities are = 0, then vxmax = vymax = 0
+        !then the timestep of the diffusion should be taken
+        if(vxmax < EPS .or. vymax < EPS)then
+            dt = dt_dif
+        !if only vxmax == 0 then avoid dividing by vxmax
+        !else if (vxmax < EPS) then
+        !    dt_adv = a_adv*grids%h/vymax
+        !    dt = MIN(dt_dif,dt_adv)
+        !else if (vymax < EPS) then
+        !    dt_adv = a_adv*grids%h/vxmax
+        !    dt = MIN(dt_dif, dt_adv)                        
+        else 
+            dt_adv = a_adv*MIN(grids%h/vxmax, grids%h/vymax)
+            dt = MIN(dt_dif, dt_adv)                        
+        end if
+        grids%T = grids%T + dt*(second_derivative(grids%T,grids%nx,grids%ny,grids%h,grids%h) &
+                 - vgrad(grids%T,grids%vx,grids%vy,grids%h, grids%h,grids%nx,grids%ny))
+        grids%W = grids%W + dt*(Pr*second_derivative(grids%W, grids%nx, grids%ny,grids%h,grids%h) &
+                -vgrad(grids%W, grids%vx, grids%vy, grids%h, grids%h, grids%nx, grids%ny) &
+                -Pr*Ra*partialdx(grids%T,grids%h,grids%nx,grids%ny))     
+        
+        time = time + dt
+        write(10,*) time, vmax
         !boundary condition at bottom and top
         grids%T(:,1) = 1.0
         grids%T(:,ny) = 0.0
         !boundary condition at sides
         grids%T(nx,:) = grids%T(nx-1,:)
         grids%T(1,:) = grids%T(2,:)
-        !print*, "Set Boundary Conditions"
-        
-        !calculate rhs
-        grids%rhs = Ra*partialdx(grids%T,dx,grids%nx,grids%ny)     
-        !print*, "Set boundary condition"
-        !calculate rms of rhs
-        rhs_rms = 0.0
-        do concurrent (i = 1:grids%nx, j = 1:grids%ny)
-            rhs_rms = rhs_rms + grids%rhs(i,j)**2
-        end do
-            
-        rhs_rms = sqrt(rhs_rms/grids%nx/grids%ny)
-        !poisson solve to get W from rhs
-        res_rms = Vcycle_2DPoisson(grids%W,grids%rhs,grids%h)
-        do while(res_rms >= err*rhs_rms)
-            res_rms = Vcycle_2DPoisson(grids%W,grids%rhs,grids%h)
-        end do
-        
-        !calculate rms of W
-        grids%W(1,:) = 0.0
-        grids%W(nx,:) = 0.0
-        grids%W(:,1) = 0.0
-        grids%W(:,ny) = 0.0
-        W_rms = 0.0
-        do concurrent (i = 1:grids%nx, j = 1:grids%ny)
-            W_rms = W_rms + grids%W(i,j)**2
-        end do
-        W_rms = sqrt(W_rms/grids%nx/grids%nx)
-        !poisson solve to get S from W
-        res_rms = Vcycle_2DPoisson(grids%S,grids%W,grids%h)
-        do while(res_rms >=  err*W_rms)
-             res_rms = Vcycle_2DPoisson(grids%S,grids%W,grids%h)
-        end do
-        !print*, "Calculated S from W" 
-        grids%S(1,:) = 0.0
-        grids%S(nx,:) = 0.0
-        grids%S(:,1) = 0.0
-        grids%S(:,ny) = 0.0
-         
-        !calculating vecolicites from S
-        grids%vx =  vel(grids%S,grids%vy,grids%nx,grids%ny)
-    
-        !calculate timestep from diffusion and from advection timestep
-        dt_adv = a_adv*MIN(grids%h/MAXVAL(grids%vx), grids%h/MAXVAL(grids%vy))
-        dt = MIN(dt_dif, dt_adv)
-
-        grids%T = grids%T + dt*k*second_derivative(grids%T,grids%nx,grids%ny,dx,dy)
-        grids%T = grids%T - dt*vgrad(grids%T,grids%vx,grids%vy,dx,dy,grids%nx,grids%ny)
-        !print*, "time", time
-        !print*, "dt", dt
-        time = time + dt
-
-        !if(time>=next_save) then
-         !   write(filename, '("T_output_", I4.4, ".dat")') iteration_counter
-            !iteration_counter
-          !  open(unit=10, file=filename, status="replace")
-           ! do i = 1, nx
-            !    write(10, *) (grids%T(i, j), j=1, ny)
-            !end do
-            !close(10)
-
-           ! next_save = next_save + save_interval
-           ! iteration_counter = iteration_counter + 1
-           ! print*, "next_save", next_save
-           ! print*, "dt", dt
-        !endif
-    end do
+        !boundary conditions for W    
+        grids%W(:,1)=0.0
+        grids%W(:,ny)=0.0
+        grids%W(1,:)=0.0
+        grids%W(nx,:)=0.0       
+       end do
+    close(10)
     
     print*, "End of do loop"
     
+    open(unit= 10, file = 'T_output.dat', status = "replace")
+    do i = 1, grids%ny
+        write(10,*)(grids%T(j,i), j = 1,grids%nx)
+    end do
+    close(10)
+
+    open(unit= 10, file = 'W_output.dat', status = "replace")
+    do i = 1, grids%ny
+        write(10,*)(grids%W(j,i), j = 1,grids%nx)
+    end do
+    close(10)
+    open(unit= 10, file = 'S_output.dat', status = "replace")
+    do i = 1, grids%ny
+        write(10,*)(grids%S(j,i), j = 1,grids%nx)
+    end do
+    close(10)
+    call deallocate_grid(grids)
 
     contains
 
@@ -412,19 +432,16 @@ program convection_simulation
         implicit none
         integer :: i,j
         type(grid),intent(inout)::a
-        
-        a%nx=nx
-        a%ny=ny
-        a%h=1./(a%ny-1)
+
+        a%h=1./(a%ny-1.0)
 
         ! Allocate space for all grids
-        allocate(a%T(a%nx,a%ny), a%W(a%nx,a%ny), a%S(a%nx,a%ny), a%vx(a%nx,a%ny), a%vy(a%nx,a%ny), a%rhs(a%nx,a%ny))
+        allocate(a%T(a%nx,a%ny), a%W(a%nx,a%ny), a%S(a%nx,a%ny), a%vx(a%nx,a%ny), a%vy(a%nx,a%ny))
         ! Initialize all grids
-        a%W=0
-        a%S=0
-        a%vx=0
-        a%vy=0
-        a%rhs=0
+        a%W=0.0
+        a%S=0.0
+        a%vx=0.0
+        a%vy=0.0
 
         ! Initialize T random
         if (Tinit == 'random') then
@@ -444,10 +461,20 @@ program convection_simulation
 
 
         ! Boundary Conditions for T
-        a%T(:,1)=1.
-        a%T(:,a%ny)=0.
+        a%T(:,1)=1.0
+        a%T(:,a%ny)=0.0
         a%T(1,:)=a%T(2,:)
         a%T(a%nx,:)=a%T(a%nx-1,:)
 
     end subroutine Initialise_grid
+
+    subroutine deallocate_grid(a)
+        implicit none
+        type(grid),intent(inout)::a
+        deallocate(a%T)
+        deallocate(a%W)
+        deallocate(a%S)
+        deallocate(a%vx)
+        deallocate(a%vy)
+    end subroutine deallocate_grid
 end program convection_simulation

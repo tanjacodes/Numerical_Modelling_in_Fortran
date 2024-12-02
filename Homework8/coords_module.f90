@@ -158,16 +158,51 @@ program main
   type(point)::p1,p2,p3
   type(pointT):: pT1, pT2
 
+  p1%x = 2.0
+  p1%y = 3.0
+  p1%z = 4.0
+  p2%x = 1.0
+  p2%y = 1.0
+  p2%z = 0.0
+
+  pT1%x = 0.0
+  pT1%y = 0.0
+  pT1%z = 0.0
+  pT1%temp = 10.0
+  pT2%x = 1.0
+  pT2%y = 1.0
+  pT2%z = 1.0
+  pT2%temp = 5.0
+
   r4 = p1
   r8 = p1
   r4 = p1.dot.p2
+  print*, r4
+  
   p3 = p1.cross.p2
+  print*, p3
+  
   p3 = p1*r4
+  print*, p3
+  
   p3 = p1*r8
+  print*, p3
+  
   p3 = r4*p1
+  print*, p3
+  
   p3 = r8*p1
+  print*, p3
+  
   p3 = p1/r4
+  print*, p3
+  
   p3 = p1/r8
+  print*, p3
+  
   r4 = pT1%Tplus(pT2)
+  print*, r4
+  
   r4 = pT1%Tminus(pT2)
+  print*, r4
 end program main

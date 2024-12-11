@@ -177,32 +177,32 @@ program main
   r4 = p1
   r8 = p1
   r4 = p1.dot.p2
-  print*, r4
+  !print*, r4
   
   p3 = p1.cross.p2
-  print*, p3
+  !print*, p3
   
   p3 = p1*r4
-  print*, p3
+  !print*, p3
   
   p3 = p1*r8
-  print*, p3
+  !print*, p3
   
   p3 = r4*p1
-  print*, p3
+  !print*, p3
   
   p3 = r8*p1
-  print*, p3
+  !print*, p3
   
   p3 = p1/r4
-  print*, p3
+  !print*, p3
   
   p3 = p1/r8
-  print*, p3
+  !print*, p3
   
   r4 = pT1%Tplus(pT2)
-  print*, r4
+  !print*, r4
   
   r4 = pT1%Tminus(pT2)
-  print*, r4
+  !print*, r4
 end program main

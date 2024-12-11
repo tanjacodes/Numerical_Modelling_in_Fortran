@@ -5,10 +5,9 @@ module convection
     public :: simulation
 
     type simulation
-        real, allocatable :: T
-        real, allocatable :: W
-        real, allocatable :: S
-        real, allocatable :: V
+        real, allocatable :: T(:,:), S(:,:), W(:,:), vx(:,:). vy(:,:)
+        integer::nx,ny
+        real:: h
         !member variablen wie S,T, V etc hier definieren
         contains
             procedure, public, pass(this) :: read_inputs, initialise, VelocitySolve, Timestep
@@ -17,6 +16,23 @@ module convection
 
 contains
     subroutine read_inputs(this)
+        real :: Pr = 0.1, Ra = 1e6, err = 1.e-3 ,a_adv = 0.4, a_dif = 0.15, total_time = 0.1, dt_dif, dt_adv, dt 
+        real :: time = 0.0, res_rms,vmax = 0.0,vxmax = 0.0, vymax = 0.0, W_rms = 0.0, EPS = 1.e-4
+        integer :: nx = 257, ny = 65, i,j
+        character(len=10) :: Tinit = 'cosine'
+        character(len=70) :: filename = 'lowPrandt_parameters.txt'   
+        real :: PI = 3.14159265359
+        !read input parameter
+        namelist /inputs/ Pr,nx, ny, Ra, total_time, err, a_adv, a_dif, Tinit 
+
+        if(command_argument_count()>0) &
+            call get_command_argument(1,filename)
+        print*, filename
+    
+        !read input paramter from file
+        open(1, file = filename, status= 'old')
+        read(1,inputs)
+        close(1)     
         
     end subroutine read_inputs
         ! Die anderen procedures auch hier definieren
@@ -294,42 +310,10 @@ contains
 
 end module convection
 
-module grid_mod
-    implicit none
-    type grid
-        integer::nx,ny
-        real::h
-        real, allocatable :: S(:,:), W(:,:), T(:,:), vx(:,:), vy(:,:)
-    end type grid
-
-end module grid_mod
 
 !main program
 program convection_simulation
-    use derivatives
-    use poisson_solver
-    use grid_mod
-
     implicit none
-    !real, allocatable :: T(:,:), S(:,:), W(:,:), vx(:,:), vy(:,:), rhs(:,:)
-    type(grid):: grids
-    real :: Pr = 0.1, Ra = 1e6, err = 1.e-3 ,a_adv = 0.4, a_dif = 0.15, total_time = 0.1, dt_dif, dt_adv, dt 
-    real :: time = 0.0, res_rms,vmax = 0.0,vxmax = 0.0, vymax = 0.0, W_rms = 0.0, EPS = 1.e-4
-    integer :: nx = 257, ny = 65, i,j
-    character(len=10) :: Tinit = 'cosine'
-    character(len=70) :: filename = 'lowPrandt_parameters.txt'   
-    real :: PI = 3.14159265359
-    !read input parameter
-    namelist /inputs/ Pr,nx, ny, Ra, total_time, err, a_adv, a_dif, Tinit 
-
-    if(command_argument_count()>0) &
-        call get_command_argument(1,filename)
-    print*, filename
-    
-    !read input paramter from file
-    open(1, file = filename, status= 'old')
-    read(1,inputs)
-    close(1)     
 
     !initialise some variables
     !initialise grid

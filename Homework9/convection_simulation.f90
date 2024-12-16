@@ -1,44 +1,215 @@
 
 module convection
     implicit none
-    private
-    public :: simulation
+    private !everything is declared private if not stated otherwise
+    public :: simulation !declared public, so we can actually use it in the main
 
     type simulation
-        real, allocatable :: T(:,:), S(:,:), W(:,:), vx(:,:). vy(:,:)
-        integer::nx,ny
-        real:: h
-        !member variablen wie S,T, V etc hier definieren
-        contains
-            procedure, public, pass(this) :: read_inputs, initialise, VelocitySolve, Timestep
-            procedure, private :: partialdx, vel, vgrad, second_derivative, iteration_2DPoisson, residue_2DPoisson, restrict, prolongate, Vcycle_2DPoisson
+        real, allocatable :: T(:,:), S(:,:), W(:,:), vx(:,:), vy(:,:)
+        real :: Pr = 0.1, Ra = 1e6, err = 1.e-3, a_adv = 0.4, a_dif = 0.15, total_time = 0.1  
+        real :: EPS = 1.e-4, dt_dif, dt,h
+        integer :: nx = 257, ny = 65
+        character(len=10) :: Tinit = 'cosine'
+        character(len=70) :: inp_filename = 'lowPrandt_parameters.txt'   
+        real :: PI = 3.14159265359
+    contains
+
+            !declared public so we can use it in the main program
+            procedure, public :: read_inputs, initialise, VelocitySolve, Timestep, write_vmax, write_output, deallocate_matrices
     end type simulation
 
 contains
     subroutine read_inputs(this)
-        real :: Pr = 0.1, Ra = 1e6, err = 1.e-3 ,a_adv = 0.4, a_dif = 0.15, total_time = 0.1, dt_dif, dt_adv, dt 
-        real :: time = 0.0, res_rms,vmax = 0.0,vxmax = 0.0, vymax = 0.0, W_rms = 0.0, EPS = 1.e-4
-        integer :: nx = 257, ny = 65, i,j
+        implicit none
+        class(simulation), intent(inout) :: this
+        real :: Pr = 0.1, Ra = 1e6, err = 1.e-3, a_adv = 0.4, a_dif = 0.15, total_time = 0.1 
+        integer :: nx = 257, ny = 65
         character(len=10) :: Tinit = 'cosine'
-        character(len=70) :: filename = 'lowPrandt_parameters.txt'   
-        real :: PI = 3.14159265359
+
         !read input parameter
-        namelist /inputs/ Pr,nx, ny, Ra, total_time, err, a_adv, a_dif, Tinit 
+        namelist /inputs/ Pr, nx, ny, Ra, total_time, err, a_adv, a_dif, Tinit 
 
         if(command_argument_count()>0) &
-            call get_command_argument(1,filename)
-        print*, filename
-    
-        !read input paramter from file
-        open(1, file = filename, status= 'old')
+            call get_command_argument(1,this%inp_filename)
+        print*,this%inp_filename
+
+        open(1,file=this%inp_filename, status='old')
         read(1,inputs)
-        close(1)     
+        close(1)
+        
+        this%Pr = Pr
+        this%nx = nx
+        this%ny = ny
+        this%Ra = Ra
+        this%total_time = total_time
+        this%err = err
+        this%a_adv = a_adv
+        this%a_dif = a_dif
+        this%Tinit = Tinit
         
     end subroutine read_inputs
+
+    subroutine initialise(this)
+        implicit none
+        class(simulation), intent(inout) :: this
+        integer :: i,j
+        real :: pi = 3.14159265
+        this%h=1./(this%ny-1.0)
+
+        ! Allocate space for all grids
+        allocate(this%T(this%nx,this%ny), this%W(this%nx,this%ny), &
+        this%S(this%nx,this%ny), this%vx(this%nx,this%ny), this%vy(this%nx,this%ny))
+        ! Initialize all grids
+        this%W=0.0
+        this%S=0.0
+        this%vx=0.0
+        this%vy=0.0
+
+        ! Initialize T random
+        if (this%Tinit == 'random') then
+            call random_number(this%T)
+
+        ! Initialize T according to slide 20
+        else if(this%Tinit == 'cosine') then
+            do i=1,this%nx
+                do j=1,this%ny
+                    this%T(i,j)=0.5*(1+cos(3*pi*(i-1)/(this%nx-1)))
+                end do
+            end do
+        else
+            print*, "Error, init has to be either random or cosine"
+        end if
+
+
+        ! Boundary Conditions for T
+        this%T(:,1)=1.0
+        this%T(:,this%ny)=0.0
+        this%T(1,:)=this%T(2,:)
+        this%T(this%nx,:)=this%T(this%nx-1,:)
+        this%dt_dif = this%a_dif*(this%h**2)/MAX(this%Pr, 1.0)
+    end subroutine initialise
         ! Die anderen procedures auch hier definieren
-	
-    !these procedures should be private, ka wie me das macht hää
-    
+
+    subroutine VelocitySolve(this)
+        implicit none
+        class(simulation), intent(inout) :: this
+        integer :: i,j
+        real :: W_rms = 0.0, res_rms
+        !calculate rms of W
+        do concurrent (i = 1:this%nx, j = 1:this%ny)
+            W_rms = W_rms + this%W(i,j)**2
+        end do
+        W_rms = sqrt(W_rms/this%nx/this%ny)
+        !if W_rms = 0, then W ==0, then it is not necessary to calculate S using Vcycle_2DPoisson
+        !we then know that S = 0
+        if(W_rms < this%EPS) then
+            this%S = 0
+        else
+            !poisson solve to get S from W
+            res_rms = Vcycle_2DPoisson(this%S,this%W,this%h)
+            do while(res_rms >  this%err*W_rms)
+                res_rms = Vcycle_2DPoisson(this%S,this%W,this%h)
+
+                !boundary conditions for S
+                this%S(1,:) = 0.0
+                this%S(this%nx,:) = 0.0
+                this%S(:,1) = 0.0
+                this%S(:,this%ny) = 0.0
+            end do
+            !calculating vecolicites from S
+            this%vx = vel(this%S,this%vy,this%nx,this%ny)
+        end if
+    end subroutine VelocitySolve
+
+    subroutine Timestep(this)
+        implicit none
+        class(simulation), intent(inout) :: this
+        real :: vxmax, vymax, vmax, dt_adv
+        vxmax = MAXVAL(ABS(this%vx)) 
+        vymax = MAXVAL(ABS(this%vy))
+        vmax = MAX(vxmax,vymax)
+        !calculate timestep from diffusion and from advection timestep
+        !if both velocities are = 0, then vxmax = vymax = 0
+        !then the timestep of the diffusion should be taken
+        if(vxmax < this%EPS .or. vymax < this%EPS)then
+            this%dt = this%dt_dif
+        !if only vxmax == 0 then avoid dividing by vxmax
+        !else if (vxmax < EPS) then
+        !    dt_adv = a_adv*grids%h/vymax
+        !    dt = MIN(dt_dif,dt_adv)
+        !else if (vymax < EPS) then
+        !    dt_adv = a_adv*grids%h/vxmax
+        !    dt = MIN(dt_dif, dt_adv)                        
+        else 
+            dt_adv = this%a_adv*MIN(this%h/vxmax, this%h/vymax)
+            this%dt = MIN(this%dt_dif, dt_adv)                        
+        end if
+        this%T = this%T + this%dt*(second_derivative(this%T,this%nx,this%ny,this%h,this%h) &
+                 - vgrad(this%T,this%vx,this%vy,this%h, this%h,this%nx,this%ny))
+        this%W = this%W + this%dt*(this%Pr*second_derivative(this%W, this%nx, this%ny,this%h,this%h) &
+                -vgrad(this%W, this%vx,this%vy, this%h, this%h, this%nx, this%ny) &
+                -this%Pr*this%Ra*partialdx(this%T,this%h,this%nx,this%ny))     
+        
+        !boundary condition at bottom and top
+        this%T(:,1) = 1.0
+        this%T(:,this%ny) = 0.0
+        !boundary condition at sides
+        this%T(this%nx,:) = this%T(this%nx-1,:)
+        this%T(1,:) = this%T(2,:)
+        !boundary conditions for W    
+        this%W(:,1)=0.0
+        this%W(:,this%ny)=0.0
+        this%W(1,:)=0.0
+        this%W(this%nx,:)=0.0       
+    end subroutine Timestep
+
+    subroutine write_vmax(this, time)
+        implicit none
+        class(simulation), intent(in) :: this
+        integer :: ios
+        real, intent(in) :: time
+        open(unit=10, file="time_vmax.dat", status="old", access="append", iostat=ios)
+  
+        ! If file doesn't exist (i.e., ios is nonzero), create it by opening in replace mode
+        if (ios /= 0) then
+            open(unit=10, file="time_vmax.dat", status="replace", access="write", iostat=ios)
+        end if
+        write(10,*) time, max(maxval(abs(this%vx)), maxval(abs(this%vy)))
+        close(10)
+    end subroutine write_vmax
+
+    subroutine write_output(this)
+        implicit none
+        class(simulation), intent(in) :: this
+        integer :: i,j
+        open(unit= 10, file = 'T_output.dat', status = "replace")
+
+        do i = 1, this%ny
+            write(10,*)(this%T(j,i), j = 1,this%nx)
+        end do
+        close(10)
+
+        open(unit= 10, file = 'W_output.dat', status = "replace")
+        do i = 1, this%ny
+            write(10,*)(this%W(j,i), j = 1,this%nx)
+        end do
+        close(10)
+        open(unit= 10, file = 'S_output.dat', status = "replace")
+        do i = 1, this%ny
+            write(10,*)(this%S(j,i), j = 1,this%nx)
+        end do
+        close(10)
+    end subroutine
+
+    subroutine deallocate_matrices(this)
+        implicit none
+        class(simulation), intent(inout) :: this
+        deallocate(this%T)
+        deallocate(this%W)
+        deallocate(this%S)
+        deallocate(this%vx)
+        deallocate(this%vy)
+    end subroutine deallocate_matrices
     !calculates dT/dx
 	function partialdx(T,dx, nx,ny)
 	    implicit none
@@ -126,7 +297,6 @@ contains
         real, dimension(Nx,Ny) :: second_derivative
         real,dimension(Nx,Ny) :: delsq
         
-
     	second_derivative(1,:) = 0.0
         second_derivative(:,1) = 0.0
     	second_derivative(nx,:) = 0.0
@@ -313,163 +483,35 @@ end module convection
 
 !main program
 program convection_simulation
+    use convection
     implicit none
+    real :: time = 0.0
+    integer :: step = 0
+    type(simulation) :: sim
 
-    !initialise some variables
-    !initialise grid
-    grids%nx = nx
-    grids%ny = ny
-    call Initialise_grid(grids)
-    !grids%h = 1.0/(grids%ny-1)
-    dt_dif = a_dif*(grids%h**2)/MAX(Pr,1.0)
-    print*, "Initialised grid"
+    call sim%read_inputs()
+    call sim%initialise()
     
     !open file to write time vs vxmax 
     open(unit=10, file='time_vmax.dat', status="replace")
-    write(10,*) time, vmax
+    write(10,*) 0.0, 0.0
     !mainloop - timesteps
-    print*, "Start do loop"
-    do while (time <=  total_time) 
+    print*, "Start loop"
+    call sim%write_vmax(0.0)
+    do while (time <= sim%total_time) 
         
-        !calculate rms of W
-        W_rms = 0.0
-        do concurrent (i = 1:grids%nx, j = 1:grids%ny)
-            W_rms = W_rms + grids%W(i,j)**2
-        end do
-        W_rms = sqrt(W_rms/grids%nx/grids%ny)
-        !if W_rms = 0, then W ==0, then it is not necessary to calculate S using Vcycle_2DPoisson
-        !we then know that S = 0
-        if(W_rms < EPS) then
-            grids%S = 0
-        else
-            !poisson solve to get S from W
-            res_rms = Vcycle_2DPoisson(grids%S,grids%W,grids%h)
-            do while(res_rms >  err*W_rms)
-                res_rms = Vcycle_2DPoisson(grids%S,grids%W,grids%h)
-
-            !boundary conditions for S
-            grids%S(1,:) = 0.0
-            grids%S(nx,:) = 0.0
-            grids%S(:,1) = 0.0
-            grids%S(:,ny) = 0.0
-            end do
-        end if
-         
-
-        !calculating vecolicites from S
-        grids%vx =  vel(grids%S,grids%vy,grids%nx,grids%ny)
-        vxmax = MAXVAL(ABS(grids%vx)) 
-        vymax = MAXVAL(ABS(grids%vy))
-        vmax = MAX(vxmax,vymax)
-        !calculate timestep from diffusion and from advection timestep
-        !if both velocities are = 0, then vxmax = vymax = 0
-        !then the timestep of the diffusion should be taken
-        if(vxmax < EPS .or. vymax < EPS)then
-            dt = dt_dif
-        !if only vxmax == 0 then avoid dividing by vxmax
-        !else if (vxmax < EPS) then
-        !    dt_adv = a_adv*grids%h/vymax
-        !    dt = MIN(dt_dif,dt_adv)
-        !else if (vymax < EPS) then
-        !    dt_adv = a_adv*grids%h/vxmax
-        !    dt = MIN(dt_dif, dt_adv)                        
-        else 
-            dt_adv = a_adv*MIN(grids%h/vxmax, grids%h/vymax)
-            dt = MIN(dt_dif, dt_adv)                        
-        end if
-        grids%T = grids%T + dt*(second_derivative(grids%T,grids%nx,grids%ny,grids%h,grids%h) &
-                 - vgrad(grids%T,grids%vx,grids%vy,grids%h, grids%h,grids%nx,grids%ny))
-        grids%W = grids%W + dt*(Pr*second_derivative(grids%W, grids%nx, grids%ny,grids%h,grids%h) &
-                -vgrad(grids%W, grids%vx, grids%vy, grids%h, grids%h, grids%nx, grids%ny) &
-                -Pr*Ra*partialdx(grids%T,grids%h,grids%nx,grids%ny))     
-        
-        time = time + dt
-        write(10,*) time, vmax
-        !boundary condition at bottom and top
-        grids%T(:,1) = 1.0
-        grids%T(:,ny) = 0.0
-        !boundary condition at sides
-        grids%T(nx,:) = grids%T(nx-1,:)
-        grids%T(1,:) = grids%T(2,:)
-        !boundary conditions for W    
-        grids%W(:,1)=0.0
-        grids%W(:,ny)=0.0
-        grids%W(1,:)=0.0
-        grids%W(nx,:)=0.0       
-       end do
+        call sim%VelocitySolve()
+        call sim%Timestep()        
+        time = time + sim%dt
+        step = step + 1
+        print*, "Time, step, maxV:" , time, step, max(maxval(abs(sim%vx)), maxval(abs(sim%vy)))
+        call sim%write_vmax(time)
+    end do
     close(10)
     
     print*, "End of do loop"
-    
-    open(unit= 10, file = 'T_output.dat', status = "replace")
-    do i = 1, grids%ny
-        write(10,*)(grids%T(j,i), j = 1,grids%nx)
-    end do
-    close(10)
-
-    open(unit= 10, file = 'W_output.dat', status = "replace")
-    do i = 1, grids%ny
-        write(10,*)(grids%W(j,i), j = 1,grids%nx)
-    end do
-    close(10)
-    open(unit= 10, file = 'S_output.dat', status = "replace")
-    do i = 1, grids%ny
-        write(10,*)(grids%S(j,i), j = 1,grids%nx)
-    end do
-    close(10)
-    call deallocate_grid(grids)
-
-    contains
-
-    
-
-    subroutine Initialise_grid(a)
-        implicit none
-        integer :: i,j
-        type(grid),intent(inout)::a
-
-        a%h=1./(a%ny-1.0)
-
-        ! Allocate space for all grids
-        allocate(a%T(a%nx,a%ny), a%W(a%nx,a%ny), a%S(a%nx,a%ny), a%vx(a%nx,a%ny), a%vy(a%nx,a%ny))
-        ! Initialize all grids
-        a%W=0.0
-        a%S=0.0
-        a%vx=0.0
-        a%vy=0.0
-
-        ! Initialize T random
-        if (Tinit == 'random') then
-            call random_number(a%T)
-
-        ! Initialize T according to slide 20
-        else if(Tinit == 'cosine') then
-            do i=1,a%nx
-                do j=1,a%ny
-                    a%T(i,j)=0.5*(1+cos(3*pi*(i-1)/(a%nx-1)))
-                    !print*, a%T(i,j)
-                end do
-            end do
-        else
-            print*, "Error, init has to be either random or cosine"
-        end if
+    call sim%write_output()
+    call sim%deallocate_matrices()
 
 
-        ! Boundary Conditions for T
-        a%T(:,1)=1.0
-        a%T(:,a%ny)=0.0
-        a%T(1,:)=a%T(2,:)
-        a%T(a%nx,:)=a%T(a%nx-1,:)
-
-    end subroutine Initialise_grid
-
-    subroutine deallocate_grid(a)
-        implicit none
-        type(grid),intent(inout)::a
-        deallocate(a%T)
-        deallocate(a%W)
-        deallocate(a%S)
-        deallocate(a%vx)
-        deallocate(a%vy)
-    end subroutine deallocate_grid
 end program convection_simulation

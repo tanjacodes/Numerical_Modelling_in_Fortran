@@ -1,5 +1,5 @@
  &inputs
-  Pr= 10.0   ! <---- CHANGE ONLY THIS 
+  Pr= 0.01   ! <---- CHANGE ONLY THIS 
   nx=257    ny=65
   total_time=0.1
   Ra=1.e6
